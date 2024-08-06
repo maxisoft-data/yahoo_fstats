@@ -1,0 +1,90 @@
+name: do it
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.head_ref || github.ref || github.run_id }}-${{ github.actor || github.repository_owner }}
+  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.actor == github.repository_owner }}
+
+jobs:
+  doit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          channels: conda-forge,spyder-ide
+          allow-softlinks: true
+          channel-priority: flexible
+          show-channel-urls: true
+          auto-activate-base: true
+          activate-environment: ""
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 pytest
+          conda install -y numpy pandas scikit-learn
+          conda install -y -c conda-forge statsmodels stumpy tqdm
+          pip install fathon EMD-signal pathvalidate
+
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+
+      - name: Lint another time with flake8
+        run: |
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Run tests
+        if: false
+        run: |
+          pytest
+
+      - name: Login to Kaggle
+        if: ${{ github.actor == github.repository_owner }}
+        uses: osbm/kaggle-login@v2.3
+        with:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME || vars.KAGGLE_USERNAME || github.repository_owner }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+
+      - name: Setup the dirs
+        if: ${{ github.actor == github.repository_owner }}
+        run: |
+          mkdir -p tmp
+          mkdir -p working
+          mkdir -p input
+          kaggle datasets download -d ${{ env.KAGGLE_USERNAME }}/${{ env.KAGGLE_DATASET }} -p input --unzip
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME || vars.KAGGLE_USERNAME || env.KAGGLE_USERNAME || github.repository_owner }}
+          KAGGLE_DATASET: ${{ secrets.KAGGLE_DATASET || vars.KAGGLE_DATASET || env.KAGGLE_DATASET || 'yahoo-finance-data-downloader' }}
+
+      - name: Run app
+        run: cd working && conda run main.py
+        env:
+          MAX_WORKER: ${{ env.MAX_WORKER || vars.MAX_WORKER || 2 }}
+          MAX_RUNTIME: ${{ env.MAX_RUNTIME || vars.MAX_RUNTIME }}
+
+      - name: Upload Archive Artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: result
+          path: working
+          if-no-files-found: error
+          retention-days: ${{ vars.ARTIFACT_RETENTION_DAYS || 60 }}
+
+
+      - name: Cleanup
+        if: ${{ always() }}
+        run: |
+          exit 0
+
