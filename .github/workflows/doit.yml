@@ -56,12 +56,15 @@ jobs:
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
 
       - name: Setup the dirs
+        uses: Wandalen/wretry.action@v3.5.0
+
         if: ${{ github.actor == github.repository_owner }}
-        run: |
-          mkdir -p tmp
-          mkdir -p working
-          mkdir -p input
-          kaggle datasets download -d ${{ env.KAGGLE_USERNAME }}/${{ env.KAGGLE_DATASET }} -p input --unzip
+        with:
+          command: |
+            mkdir -p tmp
+            mkdir -p working
+            mkdir -p input
+            kaggle datasets download -d ${{ env.KAGGLE_USERNAME }}/${{ env.KAGGLE_DATASET }} -p input --unzip
         env:
           KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME || vars.KAGGLE_USERNAME || env.KAGGLE_USERNAME || github.repository_owner }}
           KAGGLE_DATASET: ${{ secrets.KAGGLE_DATASET || vars.KAGGLE_DATASET || env.KAGGLE_DATASET || 'yahoo-finance-data' }}
