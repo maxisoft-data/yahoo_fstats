@@ -701,6 +701,7 @@ def main():
                             print("unable to pick up sub range for %s", file.name, file=sys.stderr)
                             time.sleep(0.1)
 
+                    pbar.set_description(f"processing file: {file.name}", refresh=True)
                     tasks.append(t := executor.submit(_process, file, sub))
 
                     def done_cb(t: concurrent.futures.Future):
