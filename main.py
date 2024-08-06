@@ -663,7 +663,7 @@ def main():
     files = list_files()
 
     max_workers = os.getenv("MAX_WORKERS", None)
-    if max_workers is not None:
+    if max_workers:
         max_workers = int(max_workers)
     if not max_workers:
         max_workers = os.cpu_count() or 1
@@ -673,7 +673,7 @@ def main():
     print([x.name for x in files])
 
     max_runtime = os.getenv("MAX_RUNTIME", None)
-    if max_runtime is not None:
+    if max_runtime:
         max_runtime = int(max_runtime)
     if not max_runtime:
         max_runtime = 5 * 60 * 60
