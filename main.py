@@ -636,8 +636,7 @@ def _save_results(buffer: np.ndarray, path: Path, ohlcav: pd.DataFrame, window: 
     return res
 
 
-# pylint: disable=C901
-def main():
+def main():  # pylint: disable=C901
     check_env()
     files = list_files()
 
