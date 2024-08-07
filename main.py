@@ -731,10 +731,10 @@ def pick_and_process_file(files: list[Path], executor: concurrent.futures.Execut
     return file, task
 
 
-def handle_timeout(executor, tasks: dict[Path, concurrent.futures.Future]):
+def handle_timeout(executor, tasks: dict[Path, concurrent.futures.Future], timeout: float = 60 * 60):
     """Handles timeouts and process termination."""
     try:
-        concurrent.futures.wait(tasks.values(), timeout=60 * 60)
+        concurrent.futures.wait(tasks.values(), timeout=timeout)
     except (concurrent.futures.TimeoutError, KeyboardInterrupt) as e:
         print(f"Stopping current batch due to {e}", file=sys.stderr)
         executor.shutdown(wait=False, cancel_futures=True)
@@ -742,6 +742,7 @@ def handle_timeout(executor, tasks: dict[Path, concurrent.futures.Future]):
         # Attempt forceful termination
         with contextlib.suppress(ImportError):
             import psutil
+
             for child in psutil.Process().children(recursive=True):
                 with contextlib.suppress(psutil.Error):
                     child.terminate()
@@ -767,10 +768,16 @@ def main():
         start_time = time.monotonic()
         while abs(time.monotonic() - start_time) < max_runtime:
             with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+                tasks: dict[Path, concurrent.futures.Future]
                 tasks = dict(pick_and_process_file(files, executor, pbar) for _ in range(max_workers))
-                handle_timeout(executor, tasks)
+                timeout = max(int(start_time + max_runtime - time.monotonic()), 10)
+                timeout = min(timeout, 60 * 60)
+                handle_timeout(executor, tasks, timeout=timeout)
 
-                for task in tasks:
+                for task in tasks.values():
+                    if not task.done():
+                        task.cancel()
+                        continue
                     exception = task.exception()
                     if isinstance(exception, KeyboardInterrupt):
                         executor.shutdown(False, cancel_futures=True)
