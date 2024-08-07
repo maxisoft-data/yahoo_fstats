@@ -159,7 +159,7 @@ def compute_auto_correlation(price: np.ndarray, window: int, out: np.ndarray,
             A[:, 0] = np.arange(A.shape[0])
             solution, _ = np.linalg.lstsq(A, acf, rcond=-1)[0]
             out[i] = solution
-        except (FloatingPointError, ValueError, np.linalg.LinAlgError) as e:
+        except (FloatingPointError, ValueError, np.linalg.LinAlgError):
             pass  # Ignore errors during linear regression fit
 
     return out
@@ -210,13 +210,13 @@ def compute_partial_auto_correlation(price: np.ndarray, window: int, out: np.nda
             solution, residual = np.linalg.lstsq(A, pacf, rcond=-1)[0]
             out[i, 0] = solution
             out[i, 1] = residual
-        except (FloatingPointError, ValueError, np.linalg.LinAlgError) as e:
+        except (FloatingPointError, ValueError, np.linalg.LinAlgError):
             pass  # Ignore errors during linear regression fit
 
         try:
             coef = np.polynomial.chebyshev.chebfit(np.arange(len(pacf)), pacf, 2)
             out[i, 2] = coef[0]
-        except (FloatingPointError, ValueError, np.linalg.LinAlgError) as e:
+        except (FloatingPointError, ValueError, np.linalg.LinAlgError):
             pass  # Ignore errors during Chebyshev fit
 
     return out
@@ -439,7 +439,8 @@ class IndexTracker:
     A helper class to track and manage an index within a buffer.
 
     This class is used to efficiently manage the indexing of results within a buffer during calculations.
-    It provides methods to track the current index, perform addition, and left shift operations for convenient access to specific slices of the buffer.
+    It provides methods to track the current index, perform addition,
+     and left shift operations for convenient access to specific slices of the buffer.
 
     Attributes:
         buffer (np.ndarray): The buffer array where the calculations are stored.
@@ -529,8 +530,6 @@ def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60)
         random.shuffle(shuffled_window_choice)
         for window in shuffled_window_choice:
             cancellation_event = Event()
-            znormed = _compute_znorm(log_price, window)
-            stationary_price = _select_stationary(price, znormed, executor)
             buffer = _create_buffer(len(price), window)
 
             with warnings.catch_warnings():
@@ -566,26 +565,6 @@ def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60)
                     concurrent.futures.wait(tasks, timeout=1)
 
     return path
-
-
-def _compute_znorm(log_price: np.ndarray, window: int) -> np.ndarray:
-    try:
-        from financecutils.analysis import rolling_znorm
-        return rolling_znorm(log_price, window)
-    except ImportError:
-        return (log_price - pd.Series(log_price).rolling(window).mean().bfill()) / pd.Series(
-            log_price).rolling(window).std().bfill()
-
-
-def _select_stationary(price: np.ndarray, znormed: np.ndarray, executor) -> np.ndarray:
-    t1 = executor.submit(sm.tsa.stattools.adfuller, price)
-    t2 = executor.submit(sm.tsa.stattools.adfuller, znormed)
-
-    concurrent.futures.wait([t1, t2])
-
-    _, adf, *_ = t1.result()
-    _, adf2, *_ = t2.result()
-    return price if adf < adf2 else znormed
 
 
 def _create_buffer(data_length: int, window: int) -> np.ndarray:
@@ -658,6 +637,7 @@ def _save_results(buffer: np.ndarray, path: Path, ohlcav: pd.DataFrame, window: 
     return res
 
 
+# pylint: disable=C901
 def main():
     check_env()
     files = list_files()
@@ -747,17 +727,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-# check_env()
-# files = list_files()
-# print(files)
-# file = files[files.index(Path('../input/BTC-USD.csv.xz'))]
-# df = pd.read_csv(file, dtype={'time': 'int64',
-#                               'Open': 'float64',
-#                               'High': 'float64',
-#                               'Low': 'float64',
-#                               'Close': 'float64',
-#                               'Adj Close': 'float64',
-#                               'Volume': 'float64'})
-# df.rename(mapper=str.lower, axis=1, inplace=True)
-# sub = _pickup_sub_range(df)
-# _process(file, sub)
