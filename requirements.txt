@@ -5,5 +5,5 @@ statsmodels~=0.14.2
 stumpy~=1.13.0
 pathlib~=1.0.1
 pathvalidate~=3.2.0
-tqdm~=4.65.0
+tqdm~=4.66.5
 EMD-signal~=1.6.0
