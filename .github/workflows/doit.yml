@@ -89,22 +89,73 @@ jobs:
           KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME || vars.KAGGLE_USERNAME || env.KAGGLE_USERNAME || github.repository_owner }}
           KAGGLE_DATASET: ${{ secrets.KAGGLE_DATASET || vars.KAGGLE_DATASET || env.KAGGLE_DATASET || 'yahoo-finance-data' }}
 
+
+      - name: Setup MAX_RUNTIME env
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ] && [ -z "${{ env.MAX_RUNTIME }}" ]; then
+            echo "MAX_RUNTIME=5m" >> $GITHUB_ENV
+            echo "ARTIFACT_RETENTION_DAYS=1" >> $GITHUB_ENV
+            echo "- set to test mode MAX_RUNTIME=5m" > $GITHUB_STEP_SUMMARY
+          fi
+      
+
       - name: Run app
         if: ${{ env.SAFE_TO_RUN == 'true' }}
         run: cd working && python ../main.py
         env:
-          MAX_WORKER: ${{ env.MAX_WORKER || vars.MAX_WORKER || 2 }}
+          MAX_WORKER: ${{ env.MAX_WORKER || vars.MAX_WORKER || 0.8 }}
           MAX_RUNTIME: ${{ env.MAX_RUNTIME || vars.MAX_RUNTIME }}
           TRANGE_DISABLED: ${{ env.TRANGE_DISABLED || vars.TRANGE_DISABLED || 'true' }}
 
+      - name: Test file creation
+        shell: python
+        run: |
+          import os
+          import numpy as np
+          from pathlib import Path
+          
+          def test_files(file_pattern, dtype, shape=None):
+            files = sorted(Path('working').rglob(file_pattern))
+            assert len(files) > 0, f"No files matching {file_pattern}"
+            for p in files:
+              mm = np.memmap(p, dtype=dtype, mode='r')
+              assert len(mm) > 0, f"{p} is empty"
+              if shape:
+                mm = mm.reshape(shape)
+              assert np.nanstd(mm) > 0, f"{p} has no variance"
+          
+          try:
+            test_files('*_price.npy', np.float64)
+            test_files('*_stats.npy', np.float32, (-1, 8, 16))
+          except Exception:
+            print('FILE_CREATED=false', file=os.environ['GITHUB_ENV'])
+            raise
+          else:
+            print('FILE_CREATED=true', file=os.environ['GITHUB_ENV'])
+
+      - name: create 7z archive
+        if: ${{ env.FILE_CREATED == 'true' }}
+        run: |
+          echo "- 7z random password generation" > $GITHUB_STEP_SUMMARY
+          openssl rand -base64 32 | tr -d '\r\n' > archive_pass.txt
+          echo ::add-mask::$(cat archive_pass.txt)
+          
+          pushd working
+          7z a -t7z -m0=lzma2 -mx=9 -mhe=on -ms=on -p"$(cat ../archive_pass.txt)" ../tmp/fy_memmaps.7z *
+          popd
+          
+          mv archive_pass.txt tmp
+          echo "ARTIFACT_PATH=tmp" >> $GITHUB_ENV
+
+
       - name: Upload Archive Artifact
-        if: ${{ env.SAFE_TO_RUN == 'true' && always() }}
+        if: ${{ env.SAFE_TO_RUN == 'true' && env.FILE_CREATED == 'true' && always() }}
         uses: actions/upload-artifact@v4
         with:
           name: result
-          path: working
+          path: ${{ env.ARTIFACT_PATH || 'tmp' }}
           if-no-files-found: error
-          retention-days: ${{ vars.ARTIFACT_RETENTION_DAYS || 60 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS || vars.ARTIFACT_RETENTION_DAYS || 60 }}
 
 
       - name: Cleanup
@@ -114,5 +165,6 @@ jobs:
           rm -rf input || :
           rm -rf working || :
           rm -rf tmp || :
+          rm -rf ${{ env.ARTIFACT_PATH || 'tmp' }} || :
           exit 0
 
