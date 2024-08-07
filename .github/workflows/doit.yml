@@ -36,7 +36,6 @@ jobs:
           flake8 . --count --max-complexity=10 --max-line-length=127 --statistics
   doit:
     runs-on: ubuntu-latest
-    if: ${{ env.SAFE_TO_RUN == 'true' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -73,6 +72,7 @@ jobs:
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
 
       - name: Setup the dirs
+        if: ${{ env.SAFE_TO_RUN == 'true' }}
         uses: Wandalen/wretry.action@v3.5.0
         with:
           command: |
@@ -85,6 +85,7 @@ jobs:
           KAGGLE_DATASET: ${{ secrets.KAGGLE_DATASET || vars.KAGGLE_DATASET || env.KAGGLE_DATASET || 'yahoo-finance-data' }}
 
       - name: Run app
+        if: ${{ env.SAFE_TO_RUN == 'true' }}
         run: cd working && python ../main.py
         env:
           MAX_WORKER: ${{ env.MAX_WORKER || vars.MAX_WORKER || 2 }}
@@ -92,7 +93,7 @@ jobs:
           TRANGE_DISABLED: ${{ env.TRANGE_DISABLED || vars.TRANGE_DISABLED || 'true' }}
 
       - name: Upload Archive Artifact
-        if: ${{ always() }}
+        if: ${{ env.SAFE_TO_RUN == 'true' && always() }}
         uses: actions/upload-artifact@v4
         with:
           name: result
