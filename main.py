@@ -40,25 +40,41 @@ trange_disabled = os.getenv('TRANGE_DISABLED', '').lower() in ('true', '1', 'y',
 _random_generator = np.random.default_rng()
 
 
-def rand_range_8(length: int):
-    res: np.ndarray = np.arange(length)
-    if res.shape[0] % 8 == 0:
-        res = res.reshape(-1, 8)
-        _random_generator.shuffle(res, axis=0)
-    else:
-        pt = res.shape[0] // 8 * 8
-        tmp = res[:pt].reshape(-1, 8)
-        _random_generator.shuffle(tmp, axis=0)
-        tmp = tmp.flatten()
-        tmp2 = res[pt:]
-        _random_generator.shuffle(tmp2)
-        ptr = np.random.randint(pt + 1)
-        if ptr >= pt:
-            res = np.concatenate((tmp.flatten(), tmp2))
-        else:
-            res = np.concatenate((tmp[:ptr], tmp2, tmp[ptr:]))
+def random_chunks_of_eight(length: int) -> np.ndarray:
+    """
+    Randomly shuffles a sequence of numbers into chunks of 8.
 
-    return res.flatten()
+    The function creates a sequence of numbers from 0 to length - 1,
+    reshapes it into chunks of 8 (if possible), shuffles the chunks,
+    and finally flattens the result. If the length is not divisible by 8,
+    the remaining elements are shuffled and inserted randomly into the
+    chunks.
+
+    Args:
+        length: The length of the sequence to be shuffled.
+
+    Returns:
+        A numpy array of length `length` with the shuffled numbers.
+    """
+
+    res = np.arange(length)
+
+    if length % 8 == 0:
+        res = res.reshape(-1, 8)
+        np.random.shuffle(res)
+        return res.flatten()
+
+    # Handle case where length is not divisible by 8
+    num_full_chunks = length // 8
+    full_chunks = res[:num_full_chunks * 8].reshape(-1, 8)
+    _random_generator.shuffle(full_chunks)
+    remaining = res[num_full_chunks * 8:]
+    _random_generator.shuffle(remaining)
+
+    # Insert remaining elements randomly into chunks
+    insert_idx = np.random.randint(num_full_chunks + 1)
+    full_chunks = np.insert(full_chunks, insert_idx, remaining, axis=0)
+    return full_chunks.flatten()
 
 
 def compute_price(ohlcav: pd.DataFrame, testing=True) -> np.ndarray:
@@ -187,7 +203,7 @@ def compute_partial_auto_correlation(price: np.ndarray, window: int, out: np.nda
     assert out.shape[0] == view.shape[0]
 
     # Use tqdm.trange for progress bar with description
-    for i in tqdm(rand_range_8(len(view)), desc=desc, leave=False, disable=trange_disabled):
+    for i in tqdm(random_chunks_of_eight(len(view)), desc=desc, leave=False, disable=trange_disabled):
         if cancellation_event and cancellation_event.is_set():
             break
 
@@ -273,7 +289,7 @@ def compute_mdfa(price: np.ndarray, window: int, out: np.ndarray, q=None, order=
     olag = np.unique(np.logspace(2, 10, window, base=2).astype(np.int64))
     olag = olag[olag < window // 2]
 
-    for i in tqdm(rand_range_8(len(view)), leave=False, desc="Computing mdfa", disable=trange_disabled):
+    for i in tqdm(random_chunks_of_eight(len(view)), leave=False, desc="Computing mdfa", disable=trange_disabled):
         if cancellation_event and cancellation_event.is_set():
             break
 
@@ -319,7 +335,7 @@ def compute_dfa(price: np.ndarray, window: int, out: np.ndarray, order=2,
     olag = np.unique(np.logspace(2, 10, window, base=2).astype(np.int64))
     olag = olag[olag < window // 2]
 
-    for i in tqdm(rand_range_8(len(view)), leave=False, desc="Computing dfa", disable=trange_disabled):
+    for i in tqdm(random_chunks_of_eight(len(view)), leave=False, desc="Computing dfa", disable=trange_disabled):
         if cancellation_event and cancellation_event.is_set():
             break
 
@@ -381,7 +397,7 @@ def compute_emd(price: np.ndarray, window: int, out: np.ndarray, normalize: bool
     assert out.shape[0] == view.shape[0]
     r = list(range(1000))
     random.shuffle(r)
-    for i in tqdm(rand_range_8(len(view)), leave=False, desc="Computing emd", disable=trange_disabled):
+    for i in tqdm(random_chunks_of_eight(len(view)), leave=False, desc="Computing emd", disable=trange_disabled):
         if cancellation_event and cancellation_event.is_set():
             break
         try:
