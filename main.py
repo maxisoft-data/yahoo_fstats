@@ -504,7 +504,6 @@ class IndexTracker:
             int: The current index value after the left shift.
         """
 
-        res = self.index
         self.index += other
         return self.index
 
