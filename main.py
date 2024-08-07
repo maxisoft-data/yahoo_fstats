@@ -537,14 +537,17 @@ class IndexTracker:
         return self.index
 
 
-def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60):
+def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60, per_window_timeout=5 * 60):
     price = compute_price(ohlcav)
     log_price = compute_log_price(price)
+    start_time = time.monotonic()
 
     with concurrent.futures.ThreadPoolExecutor(max_threads) as executor:
         shuffled_window_choice = copy.copy(window_choice)
         random.shuffle(shuffled_window_choice)
         for window in shuffled_window_choice:
+            if time.monotonic() - start_time > timeout:
+                break
             cancellation_event = Event()
             buffer = _create_buffer(len(price), window)
 
@@ -558,19 +561,25 @@ def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60)
 
                 tasks = _submit_calculation(executor, cancellation_event, log_price, window, buffer, g)
 
-                try:
-                    concurrent.futures.wait(tasks, timeout=timeout)
-                except concurrent.futures.TimeoutError:
-                    pass
-                finally:
-                    cancellation_event.set()
+                if not tasks:
+                    continue
+
+                task_timeout = min(per_window_timeout, timeout - int(time.monotonic() - start_time))
+                with contextlib.suppress(concurrent.futures.TimeoutError):
+                    concurrent.futures.wait(tasks, timeout=task_timeout)
+
+                cancellation_event.set()
+
+                with contextlib.suppress(concurrent.futures.TimeoutError):
+                    concurrent.futures.wait(tasks, timeout=min(30, task_timeout))
 
                 for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                        continue
                     with contextlib.suppress(concurrent.futures.CancelledError):
                         if isinstance(e := task.exception(), KeyboardInterrupt):
                             raise e
-                    if not task.done():
-                        task.cancel()
 
                 tasks.clear()
 
@@ -578,7 +587,7 @@ def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60)
                                       price=price)
 
                 with contextlib.suppress(concurrent.futures.TimeoutError):
-                    concurrent.futures.wait(tasks, timeout=1)
+                    concurrent.futures.wait(tasks, timeout=30)
 
     return path
 
@@ -691,7 +700,9 @@ def configure_environment():
     return int(max_workers), max_runtime
 
 
-def pick_and_process_file(files: list[Path], executor: concurrent.futures.Executor, pbar):
+def pick_and_process_file(files: list[Path], executor: concurrent.futures.Executor, pbar, timeout: float):
+    start_time = time.monotonic()
+
     """Processes a single file using the provided executor."""
     while True:
         file = random.choice(files)
@@ -713,8 +724,11 @@ def pick_and_process_file(files: list[Path], executor: concurrent.futures.Execut
             break
         print(f"Failed to pick sub-range for {file.name}, retrying...", file=sys.stderr)
         time.sleep(0.1)
+        if abs(time.monotonic() - start_time) > timeout:
+            raise TimeoutError(f"Failed to pick sub-range for {file.name} within {timeout} seconds")
 
-    task = executor.submit(_process, file, sub)
+    timeout = max(timeout, 60)
+    task = executor.submit(_process, file, sub, timeout=timeout)
 
     def done_callback(future):
         if future.done():
@@ -768,10 +782,11 @@ def main():
         start_time = time.monotonic()
         while abs(time.monotonic() - start_time) < max_runtime:
             with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-                tasks: dict[Path, concurrent.futures.Future]
-                tasks = dict(pick_and_process_file(files, executor, pbar) for _ in range(max_workers))
-                timeout = max(int(start_time + max_runtime - time.monotonic()), 10)
+                timeout = max(int(max_runtime - (time.monotonic() - start_time)), 10)
                 timeout = min(timeout, 60 * 60)
+
+                tasks: dict[Path, concurrent.futures.Future]
+                tasks = dict(pick_and_process_file(files, executor, pbar, timeout) for _ in range(max_workers))
                 handle_timeout(executor, tasks, timeout=timeout)
 
                 for task in tasks.values():

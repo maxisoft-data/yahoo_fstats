@@ -90,12 +90,14 @@ jobs:
           KAGGLE_DATASET: ${{ secrets.KAGGLE_DATASET || vars.KAGGLE_DATASET || env.KAGGLE_DATASET || 'yahoo-finance-data' }}
 
 
-      - name: Setup MAX_RUNTIME env
+      - name: Setup testing related environ
         run: |
           if [ "${{ github.event_name }}" != "schedule" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ] && [ -z "${{ env.MAX_RUNTIME }}" ]; then
             echo "MAX_RUNTIME=5m" >> $GITHUB_ENV
+            echo "MAX_WORKER=1" >> $GITHUB_ENV
             echo "ARTIFACT_RETENTION_DAYS=1" >> $GITHUB_ENV
             echo "- set to test mode MAX_RUNTIME=5m" > $GITHUB_STEP_SUMMARY
+            echo "set to test mode (MAX_RUNTIME=5m)"
           fi
       
 
@@ -126,12 +128,14 @@ jobs:
           
           try:
             test_files('*_price.npy', np.float64)
-            test_files('*_stats.npy', np.float32, (-1, 8, 16))
+            test_files('*_stats.npy', np.float32, (-1, 16))
           except Exception:
-            print('FILE_CREATED=false', file=os.environ['GITHUB_ENV'])
+            with open(os.environ['GITHUB_ENV'], 'w') as file:
+              print('FILE_CREATED=false', file=file)
             raise
           else:
-            print('FILE_CREATED=true', file=os.environ['GITHUB_ENV'])
+            with open(os.environ['GITHUB_ENV'], 'w') as file:
+              print('FILE_CREATED=true', file=file)
 
       - name: create 7z archive
         if: ${{ env.FILE_CREATED == 'true' }}
