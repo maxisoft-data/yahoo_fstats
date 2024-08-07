@@ -3,6 +3,7 @@ import contextlib
 import copy
 import os
 import random
+import re
 import sys
 import time
 import warnings
@@ -40,25 +41,41 @@ trange_disabled = os.getenv('TRANGE_DISABLED', '').lower() in ('true', '1', 'y',
 _random_generator = np.random.default_rng()
 
 
-def rand_range_8(length: int):
-    res: np.ndarray = np.arange(length)
-    if res.shape[0] % 8 == 0:
-        res = res.reshape(-1, 8)
-        _random_generator.shuffle(res, axis=0)
-    else:
-        pt = res.shape[0] // 8 * 8
-        tmp = res[:pt].reshape(-1, 8)
-        _random_generator.shuffle(tmp, axis=0)
-        tmp = tmp.flatten()
-        tmp2 = res[pt:]
-        _random_generator.shuffle(tmp2)
-        ptr = np.random.randint(pt + 1)
-        if ptr >= pt:
-            res = np.concatenate((tmp.flatten(), tmp2))
-        else:
-            res = np.concatenate((tmp[:ptr], tmp2, tmp[ptr:]))
+def random_chunks_of_eight(length: int) -> np.ndarray:
+    """
+    Randomly shuffles a sequence of numbers into chunks of 8.
 
-    return res.flatten()
+    The function creates a sequence of numbers from 0 to length - 1,
+    reshapes it into chunks of 8 (if possible), shuffles the chunks,
+    and finally flattens the result. If the length is not divisible by 8,
+    the remaining elements are shuffled and inserted randomly into the
+    chunks.
+
+    Args:
+        length: The length of the sequence to be shuffled.
+
+    Returns:
+        A numpy array of length `length` with the shuffled numbers.
+    """
+
+    res = np.arange(length)
+
+    if length % 8 == 0:
+        res = res.reshape(-1, 8)
+        np.random.shuffle(res)
+        return res.flatten()
+
+    # Handle case where length is not divisible by 8
+    num_full_chunks = length // 8
+    full_chunks = res[:num_full_chunks * 8].reshape(-1, 8)
+    _random_generator.shuffle(full_chunks)
+    remaining = res[num_full_chunks * 8:]
+    _random_generator.shuffle(remaining)
+
+    # Insert remaining elements randomly into chunks
+    insert_idx = np.random.randint(num_full_chunks + 1)
+    full_chunks = np.insert(full_chunks, insert_idx, remaining, axis=0)
+    return full_chunks.flatten()
 
 
 def compute_price(ohlcav: pd.DataFrame, testing=True) -> np.ndarray:
@@ -187,7 +204,7 @@ def compute_partial_auto_correlation(price: np.ndarray, window: int, out: np.nda
     assert out.shape[0] == view.shape[0]
 
     # Use tqdm.trange for progress bar with description
-    for i in tqdm(rand_range_8(len(view)), desc=desc, leave=False, disable=trange_disabled):
+    for i in tqdm(random_chunks_of_eight(len(view)), desc=desc, leave=False, disable=trange_disabled):
         if cancellation_event and cancellation_event.is_set():
             break
 
@@ -273,7 +290,7 @@ def compute_mdfa(price: np.ndarray, window: int, out: np.ndarray, q=None, order=
     olag = np.unique(np.logspace(2, 10, window, base=2).astype(np.int64))
     olag = olag[olag < window // 2]
 
-    for i in tqdm(rand_range_8(len(view)), leave=False, desc="Computing mdfa", disable=trange_disabled):
+    for i in tqdm(random_chunks_of_eight(len(view)), leave=False, desc="Computing mdfa", disable=trange_disabled):
         if cancellation_event and cancellation_event.is_set():
             break
 
@@ -319,7 +336,7 @@ def compute_dfa(price: np.ndarray, window: int, out: np.ndarray, order=2,
     olag = np.unique(np.logspace(2, 10, window, base=2).astype(np.int64))
     olag = olag[olag < window // 2]
 
-    for i in tqdm(rand_range_8(len(view)), leave=False, desc="Computing dfa", disable=trange_disabled):
+    for i in tqdm(random_chunks_of_eight(len(view)), leave=False, desc="Computing dfa", disable=trange_disabled):
         if cancellation_event and cancellation_event.is_set():
             break
 
@@ -381,7 +398,7 @@ def compute_emd(price: np.ndarray, window: int, out: np.ndarray, normalize: bool
     assert out.shape[0] == view.shape[0]
     r = list(range(1000))
     random.shuffle(r)
-    for i in tqdm(rand_range_8(len(view)), leave=False, desc="Computing emd", disable=trange_disabled):
+    for i in tqdm(random_chunks_of_eight(len(view)), leave=False, desc="Computing emd", disable=trange_disabled):
         if cancellation_event and cancellation_event.is_set():
             break
         try:
@@ -504,7 +521,6 @@ class IndexTracker:
             int: The current index value after the left shift.
         """
 
-        res = self.index
         self.index += other
         return self.index
 
@@ -521,14 +537,17 @@ class IndexTracker:
         return self.index
 
 
-def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60):
+def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60, per_window_timeout=5 * 60):
     price = compute_price(ohlcav)
     log_price = compute_log_price(price)
+    start_time = time.monotonic()
 
     with concurrent.futures.ThreadPoolExecutor(max_threads) as executor:
         shuffled_window_choice = copy.copy(window_choice)
         random.shuffle(shuffled_window_choice)
         for window in shuffled_window_choice:
+            if time.monotonic() - start_time > timeout:
+                break
             cancellation_event = Event()
             buffer = _create_buffer(len(price), window)
 
@@ -542,19 +561,25 @@ def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60)
 
                 tasks = _submit_calculation(executor, cancellation_event, log_price, window, buffer, g)
 
-                try:
-                    concurrent.futures.wait(tasks, timeout=timeout)
-                except concurrent.futures.TimeoutError:
-                    pass
-                finally:
-                    cancellation_event.set()
+                if not tasks:
+                    continue
+
+                task_timeout = min(per_window_timeout, timeout - int(time.monotonic() - start_time))
+                with contextlib.suppress(concurrent.futures.TimeoutError):
+                    concurrent.futures.wait(tasks, timeout=task_timeout)
+
+                cancellation_event.set()
+
+                with contextlib.suppress(concurrent.futures.TimeoutError):
+                    concurrent.futures.wait(tasks, timeout=min(30, task_timeout))
 
                 for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                        continue
                     with contextlib.suppress(concurrent.futures.CancelledError):
                         if isinstance(e := task.exception(), KeyboardInterrupt):
                             raise e
-                    if not task.done():
-                        task.cancel()
 
                 tasks.clear()
 
@@ -562,7 +587,7 @@ def _process(path: Path, ohlcav: pd.DataFrame, max_threads=None, timeout=5 * 60)
                                       price=price)
 
                 with contextlib.suppress(concurrent.futures.TimeoutError):
-                    concurrent.futures.wait(tasks, timeout=1)
+                    concurrent.futures.wait(tasks, timeout=30)
 
     return path
 
@@ -637,92 +662,145 @@ def _save_results(buffer: np.ndarray, path: Path, ohlcav: pd.DataFrame, window: 
     return res
 
 
-# pylint: disable=C901
+def parse_time_interval(time_str: str | int) -> int:
+    """Parses a time interval string into seconds.
+
+    Args:
+        time_str: The time interval string to parse.
+
+    Returns:
+        The equivalent number of seconds.
+
+    Raises:
+        ValueError: If the time string is invalid.
+    """
+
+    with contextlib.suppress(ValueError):
+        return int(time_str)
+    time_units = {"s": 1, "m": 60, "h": 3600}
+    match = re.findall(r"(\d+(?:\.\d+)?)([smh])", time_str)
+    if not match:
+        raise ValueError(f"Invalid time format: {time_str}")
+
+    total_seconds = sum(float(value) * time_units[unit] for value, unit in match)
+    return int(total_seconds)
+
+
+def configure_environment():
+    """Configures environment variables and returns relevant parameters."""
+    max_workers = float(os.getenv("MAX_WORKERS", os.cpu_count() or 1))
+    if max_workers < 0:
+        max_workers = os.cpu_count() + max_workers
+    if 0.0 < max_workers < 1.0:
+        max_workers = int(os.cpu_count() * max_workers)
+
+    default_max_runtime = f'{5 * 60 * 60}'
+    max_runtime = parse_time_interval(os.getenv("MAX_RUNTIME", default_max_runtime) or default_max_runtime)
+
+    return int(max_workers), max_runtime
+
+
+def pick_and_process_file(files: list[Path], executor: concurrent.futures.Executor, pbar, timeout: float):
+    start_time = time.monotonic()
+
+    """Processes a single file using the provided executor."""
+    while True:
+        file = random.choice(files)
+        ohlcav = pd.read_csv(
+            file,
+            dtype={
+                "time": "int64",
+                "Open": "float64",
+                "High": "float64",
+                "Low": "float64",
+                "Close": "float64",
+                "Adj Close": "float64",
+                "Volume": "float64",
+            },
+        )
+        ohlcav.rename(mapper=str.lower, axis=1, inplace=True)
+        sub = _pickup_sub_range(ohlcav)
+        if sub is not None and len(sub) > 0:
+            break
+        print(f"Failed to pick sub-range for {file.name}, retrying...", file=sys.stderr)
+        time.sleep(0.1)
+        if abs(time.monotonic() - start_time) > timeout:
+            raise TimeoutError(f"Failed to pick sub-range for {file.name} within {timeout} seconds")
+
+    timeout = max(timeout, 60)
+    task = executor.submit(_process, file, sub, timeout=timeout)
+
+    def done_callback(future):
+        if future.done():
+            exception = future.exception()
+            if exception is None:
+                result = future.result()
+                if pbar is not None:
+                    pbar.update(1)
+                    pbar.set_description(f"Processed: {result}", refresh=True)
+            else:
+                print(f"Error: {exception}", file=sys.stderr)
+
+    task.add_done_callback(done_callback)
+    return file, task
+
+
+def handle_timeout(executor, tasks: dict[Path, concurrent.futures.Future], timeout: float = 60 * 60):
+    """Handles timeouts and process termination."""
+    try:
+        concurrent.futures.wait(tasks.values(), timeout=timeout)
+    except (concurrent.futures.TimeoutError, KeyboardInterrupt) as e:
+        print(f"Stopping current batch due to {e}", file=sys.stderr)
+        executor.shutdown(wait=False, cancel_futures=True)
+
+        # Attempt forceful termination
+        with contextlib.suppress(ImportError):
+            import psutil
+
+            for child in psutil.Process().children(recursive=True):
+                with contextlib.suppress(psutil.Error):
+                    child.terminate()
+
+            with contextlib.suppress(concurrent.futures.TimeoutError):
+                concurrent.futures.wait(tasks.values(), timeout=5)
+
+            for child in psutil.Process().children(recursive=True):
+                with contextlib.suppress(psutil.Error):
+                    child.terminate()
+
+        if isinstance(e, KeyboardInterrupt):
+            raise
+
+
 def main():
+    max_workers, max_runtime = configure_environment()
     check_env()
     files = list_files()
 
-    max_workers = os.getenv("MAX_WORKERS", None)
-    if max_workers:
-        max_workers = int(max_workers)
-    if not max_workers:
-        max_workers = os.cpu_count() or 1
-    if max_workers < 0:
-        max_workers = os.cpu_count() + max_workers
-
-    print([x.name for x in files])
-
-    max_runtime = os.getenv("MAX_RUNTIME", None)
-    if max_runtime:
-        max_runtime = int(max_runtime)
-    if not max_runtime:
-        max_runtime = 5 * 60 * 60
-
-    start_time = time.monotonic()
+    count = 0
     with tqdm() as pbar:
+        start_time = time.monotonic()
         while abs(time.monotonic() - start_time) < max_runtime:
-            with concurrent.futures.ProcessPoolExecutor(max_workers) as executor:
-                tasks: list[concurrent.futures.Future] = []
-                for n in range(max_workers):
-                    sub = None
+            with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+                timeout = max(int(max_runtime - (time.monotonic() - start_time)), 10)
+                timeout = min(timeout, 60 * 60)
 
-                    while sub is None:
-                        file = random.choice(files)
-                        ohlcav = pd.read_csv(file, dtype={'time': 'int64',
-                                                          'Open': 'float64',
-                                                          'High': 'float64',
-                                                          'Low': 'float64',
-                                                          'Close': 'float64',
-                                                          'Adj Close': 'float64',
-                                                          'Volume': 'float64'})
-                        ohlcav.rename(mapper=str.lower, axis=1, inplace=True)
-                        sub = _pickup_sub_range(ohlcav)
-                        if sub is None or len(sub) == 0:
-                            print("unable to pick up sub range for %s", file.name, file=sys.stderr)
-                            time.sleep(0.1)
+                tasks: dict[Path, concurrent.futures.Future]
+                tasks = dict(pick_and_process_file(files, executor, pbar, timeout) for _ in range(max_workers))
+                handle_timeout(executor, tasks, timeout=timeout)
 
-                    pbar.set_description(f"processing file: {file.name}", refresh=True)
-                    tasks.append(t := executor.submit(_process, file, sub))
+                for task in tasks.values():
+                    if not task.done():
+                        task.cancel()
+                        continue
+                    exception = task.exception()
+                    if isinstance(exception, KeyboardInterrupt):
+                        executor.shutdown(False, cancel_futures=True)
+                        raise exception
 
-                    def done_cb(t: concurrent.futures.Future):
-                        if t.done():
-                            pbar.update(1)
-                            if (e := t.exception()) is None:
-                                pbar.set_description(f"{t.result()}", refresh=True)
-                            else:
-                                print(e, file=sys.stderr)
+                    count += 1
 
-                    t.add_done_callback(done_cb)
-
-                try:
-                    concurrent.futures.wait(tasks, timeout=60 * 60)
-                except (concurrent.futures.TimeoutError, KeyboardInterrupt) as e:
-                    print("stopping current batch", file=sys.stderr)
-                    executor.shutdown(False, cancel_futures=True)
-                    try:
-                        import psutil
-                    except ImportError:
-                        pass
-                    else:
-                        for p in psutil.Process().children(recursive=True):
-                            with contextlib.suppress(psutil.Error):
-                                p.terminate()
-                        with contextlib.suppress(concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
-                            concurrent.futures.wait(tasks, timeout=5)
-                        for p in psutil.Process().children(recursive=True):
-                            with contextlib.suppress(psutil.Error):
-                                p.kill()
-
-                    if isinstance(e, KeyboardInterrupt):
-                        raise
-
-                for t in tasks:
-                    if (e := t.exception()) is not None:
-                        if isinstance(e, KeyboardInterrupt):
-                            raise e
-                tasks.clear()
-
-                executor.shutdown(False, cancel_futures=True)
+    print(f"Finished processing {count} files.")
 
 
 if __name__ == '__main__':
