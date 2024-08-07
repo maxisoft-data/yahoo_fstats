@@ -1,7 +1,7 @@
 name: Keep the repo alive
 on:
   schedule:
-    - cron: "48 18 * * *"
+    - cron: "12 22 * * *"
   push:
   fork:
   status:
@@ -19,5 +19,5 @@ jobs:
       - uses: gautamkrishnar/keepalive-workflow@v2
         with:
           use_api: false
-          committer_username: ${{ github.repository_owner }}
-          committer_email: ${{ github.repository_owner }}@users.noreply.github.com
+          committer_username: ${{ vars.REPOSITORY_OWNER || github.repository_owner }}
+          committer_email: ${{ vars.REPOSITORY_OWNER ||github.repository_owner }}@users.noreply.github.com
