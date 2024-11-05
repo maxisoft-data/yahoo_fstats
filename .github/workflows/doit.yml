@@ -78,7 +78,7 @@ jobs:
 
       - name: Setup the dirs
         if: ${{ env.SAFE_TO_RUN == 'true' }}
-        uses: Wandalen/wretry.action@v3.5.0
+        uses: Wandalen/wretry.action@v3.7.1
         with:
           command: |
             mkdir -p tmp
