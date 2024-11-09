@@ -15,11 +15,18 @@ import fathon
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-import stumpy
+try:
+    import stumpy
+except Exception as e:
+    print(f"unable to import stumpy {e}", file=sys.stderr)
 from PyEMD import EMD
 from numpy.lib.stride_tricks import sliding_window_view
 from pathvalidate import sanitize_filename
 from tqdm.auto import tqdm, trange
+
+
+prefer_latest = os.getenv('PREFER_LATEST', '0').lower() in ('true', '1', 'y', 'yes', 'ok')
+prefer_crypto = os.getenv('PREFER_CRYPTO', 'true').lower() in ('true', '1', 'y', 'yes', 'ok')
 
 
 def check_env():
@@ -106,7 +113,7 @@ def compute_price(ohlcav: pd.DataFrame, testing=True) -> np.ndarray:
 
 
 def _pickup_sub_range(ohlcav: pd.DataFrame, max_mult=5) -> Optional[pd.DataFrame]:
-    window_max = max(window_choice)
+    window_max = max(window_choice) * 2
     length = np.random.randint(window_max * 3, window_max * max_mult) // 16 * 16
 
     if len(ohlcav) < length:
@@ -115,6 +122,8 @@ def _pickup_sub_range(ohlcav: pd.DataFrame, max_mult=5) -> Optional[pd.DataFrame
 
     while start_index / len(ohlcav) < np.random.random():
         start_index = np.random.randint(0, len(ohlcav) - length)
+        if not prefer_latest:
+            break
 
     return ohlcav.iloc[start_index:start_index + length].copy()
 
@@ -700,12 +709,33 @@ def configure_environment():
     return int(max_workers), max_runtime
 
 
+def _pick_random_file_weighted(files: list[Path]):
+    if not prefer_crypto:
+        return random.choice(files)
+
+    def weight(f: Path):
+        stem = f.stem.upper()
+        if stem.startswith('ALGO'):
+            return 10
+        if stem.startswith('BTC') and not stem.startswith('BTCB'):
+            return 1000
+        if stem.startswith('ETH'):
+            return 100
+        if stem.startswith('SOL') or stem.startswith('BNB') or stem.startswith('DOGE') or stem.startswith('XRP') or stem.startswith('WBTC'):
+            return 70
+        if stem.startswith('USDT') or stem.startswith('USDC') or stem.startswith('DAI') or stem.startswith('TUSD') or stem.startswith('BUSD'):
+            return 50
+        if stem.startswith('MATIC'):
+            return 20
+        return 1
+    return random.choices(files, weights=[weight(f) for f in files], k=1)[0]
+
 def pick_and_process_file(files: list[Path], executor: concurrent.futures.Executor, pbar, timeout: float):
     start_time = time.monotonic()
 
     """Processes a single file using the provided executor."""
     while True:
-        file = random.choice(files)
+        file = _pick_random_file_weighted(files)
         ohlcav = pd.read_csv(
             file,
             dtype={
